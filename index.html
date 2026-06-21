@@ -929,11 +929,29 @@ textarea.form-input {
               <option value="gemini">Google Gemini（自行輸入 API Key）</option>
             </select>
           </div>
+          <div class="form-group" id="geminiModelPresetGroup" style="display:none;">
+            <label>模型預設</label>
+            <select class="form-input" id="geminiModelPreset" onchange="updateGeminiModelPresetUI()">
+              <option value="gemini-3.5-flash">Gemini 3.5 Flash（建議預設）</option>
+              <option value="gemini-3.1-pro">Gemini 3.1 Pro（高品質）</option>
+              <option value="gemini-3-flash">Gemini 3 Flash（快速）</option>
+              <option value="gemini-3.1-flash-lite">Gemini 3.1 Flash-Lite（省額度）</option>
+              <option value="gemini-2.5-flash">Gemini 2.5 Flash（相容穩定）</option>
+              <option value="gemini-2.5-pro">Gemini 2.5 Pro（相容高品質）</option>
+              <option value="gemini-2.5-flash-lite">Gemini 2.5 Flash-Lite（相容省額度）</option>
+              <option value="custom">自訂模型名稱</option>
+            </select>
+          </div>
+          <div class="form-group" id="geminiCustomModelGroup" style="display:none;">
+            <label>自訂模型名稱</label>
+            <input type="text" class="form-input" id="geminiCustomModel" placeholder="例：gemini-flash-latest">
+          </div>
         </div>
         <div class="api-key-row" id="apiKeyRow" style="display:none;">
           <input type="password" class="form-input" id="geminiApiKey" placeholder="輸入您的 Gemini API Key">
           <button class="btn btn-gold" onclick="saveGeminiApiKey()">儲存 Key</button>
           <button class="btn btn-teal" onclick="loadGeminiApiKey()">讀取 Key</button>
+          <button class="btn btn-outline" onclick="saveGeminiModelSetting()">儲存模型</button>
           <button class="btn btn-outline" onclick="openGeminiApiKeyPage()">取得 API Key</button>
         </div>
         <div class="tool-hint" id="aiProviderHint">本機規則合併會直接在瀏覽器內完成，不會把文字送到雲端。</div>
@@ -1027,16 +1045,24 @@ const cadreRoleGroups = {
 const selfEvalFields = [
   {id:'selfSchoolService', label:'學校服務', aliases:['學校服務','校內服務','服務學習','校內表現-學校服務','校內表現']},
   {id:'selfClub', label:'社團表現', aliases:['社團表現','社團','社團活動']},
-  {id:'selfAcademic', label:'學業表現', aliases:['學業表現','學習表現','成績表現','課業表現']},
+  {id:'selfAcademic', label:'學業表現', aliases:['學業表現','學習表現','成績表現','課業表現','學業成就']},
   {id:'selfDailyLife', label:'生活常規', aliases:['生活常規','日常生活','生活表現','出缺席','守法表現']},
   {id:'selfSpecialIn', label:'校內其他特殊表現', aliases:['其他特殊表現','校內其他特殊表現','校內特殊表現','特殊表現']},
   {id:'selfSocialService', label:'社會服務', aliases:['社會服務','校外服務','志工服務']},
   {id:'selfPerformance', label:'活動表演', aliases:['活動表演','校外活動','表演活動','活動參與']},
-  {id:'selfScienceFair', label:'科學展覽', aliases:['科學展覽','科展','科學競賽']},
-  {id:'selfSpecialOut', label:'校外其他特殊表現', aliases:['校外其他特殊表現','校外特殊表現','其他校外表現']}
+  {id:'selfScienceFair', label:'科學展覽', aliases:['科學展覽','科展','科學競賽','競賽展覽']},
+  {id:'selfSpecialOut', label:'校外其他特殊表現', aliases:['校外其他特殊表現','校外特殊表現','其他校外表現','研習聽講','其他表現']}
 ];
 
-const GEMINI_MODELS = ['gemini-2.5-flash', 'gemini-2.5-flash-lite'];
+const GEMINI_MODELS = [
+  'gemini-3.5-flash',
+  'gemini-3.1-pro',
+  'gemini-3-flash',
+  'gemini-3.1-flash-lite',
+  'gemini-2.5-flash',
+  'gemini-2.5-pro',
+  'gemini-2.5-flash-lite'
+];
 const GEMINI_API_KEY_URL = 'https://aistudio.google.com/app/apikey';
 
 const schoolCommentDB = {
@@ -1245,6 +1271,7 @@ function init() {
   renderQuickRoles();
   renderTraits();
   loadGeminiApiKey(false);
+  loadGeminiModelSetting();
   updateAiProviderUI();
   
   // Char counts
@@ -1478,13 +1505,139 @@ function getRowValue(row, aliases) {
   });
   for (const alias of aliases) {
     const value = normalizedMap[normalizeHeader(alias)];
-    if (value !== undefined && value !== null && String(value).trim() !== '') return String(value).trim();
+    if (isMeaningfulImportValue(value)) return String(value).trim();
   }
   return '';
 }
 
+function getCombinedRowValue(row, aliases) {
+  const normalizedMap = {};
+  Object.keys(row).forEach(key => {
+    normalizedMap[normalizeHeader(key)] = row[key];
+  });
+  const values = [];
+  aliases.forEach(alias => {
+    const value = normalizedMap[normalizeHeader(alias)];
+    if (isMeaningfulImportValue(value)) values.push(String(value).trim());
+  });
+  return [...new Set(values)].join('；');
+}
+
 function getStudentNameFromRow(row) {
   return getRowValue(row, ['學生姓名','姓名','學生','名字','name']);
+}
+
+function isMeaningfulImportValue(value) {
+  const text = String(value ?? '').trim();
+  return text && !/^(no|none|無|沒有|否|na|n\/a)$/i.test(text);
+}
+
+function splitImportItems(value) {
+  if (!isMeaningfulImportValue(value)) return [];
+  return String(value)
+    .split(/[、,，；;\n]+/)
+    .map(item => item.trim())
+    .filter(isMeaningfulImportValue);
+}
+
+function findSchoolCommentText(code) {
+  for (const cat of Object.values(schoolCommentDB)) {
+    const found = cat.items.find(item => item.code === code);
+    if (found) return found.text;
+  }
+  return '';
+}
+
+function applyImportedCodes(row) {
+  const codeValues = [
+    getRowValue(row, ['性情描述(正向)','性情描述正向','性情正向']),
+    getRowValue(row, ['性情描述(負向)','性情描述負向','性情負向']),
+    getRowValue(row, ['向學描述','向學']),
+    getRowValue(row, ['進取描述','進取']),
+    getRowValue(row, ['紀律描述','紀律']),
+    getRowValue(row, ['交友描述','交友']),
+    getRowValue(row, ['服務描述','服務']),
+    getRowValue(row, ['擅長描述','擅長'])
+  ];
+  let added = 0;
+  codeValues.forEach(value => {
+    const matches = String(value || '').match(/\d{3}/g) || [];
+    matches.forEach(code => {
+      if (findSchoolCommentText(code) && !state.selectedCodes.includes(code)) {
+        state.selectedCodes.push(code);
+        added += 1;
+      }
+    });
+  });
+  renderCodeItems();
+  renderCodeTags();
+  return added;
+}
+
+function normalizeCadreRole(role, type) {
+  let text = String(role || '').trim();
+  if (!isMeaningfulImportValue(text)) return '';
+  text = text.replace(/\s+/g, '');
+  if (type === 'teacher' && !/小老師$/.test(text)) return `${text}小老師`;
+  if (type === 'cadre') {
+    if (/^(風紀|學藝|衛生|總務|康樂|圖資)$/.test(text)) return `${text}股長`;
+    if (/^(副風紀|副學藝|副衛生|副總務|副康樂|副圖資)$/.test(text)) return `${text}股長`;
+  }
+  return text;
+}
+
+function addImportedCadre(role, type) {
+  const normalizedRole = normalizeCadreRole(role, type);
+  if (!normalizedRole) return false;
+  if (state.cadres.some(cadre => cadre.role === normalizedRole)) return false;
+  state.cadres.push({ id: Date.now() + Math.random(), role: normalizedRole, perf: 'responsible' });
+  return true;
+}
+
+function applyImportedCadres(row) {
+  let added = 0;
+  splitImportItems(getRowValue(row, ['擔任幹部','擔任幹部 ','班級幹部','幹部'])).forEach(role => {
+    if (addImportedCadre(role, 'cadre')) added += 1;
+  });
+  splitImportItems(getRowValue(row, ['擔任小老師','小老師','科目小老師'])).forEach(role => {
+    if (addImportedCadre(role, 'teacher')) added += 1;
+  });
+  renderCadreTags();
+  return added;
+}
+
+function parseActivityText(text) {
+  const clean = String(text || '').trim().replace(/^參加/, '');
+  const match = clean.match(/^(.+?)(?:獲得|榮獲|得到|取得)(.+)$/);
+  if (match) return { name: match[1].trim(), result: match[2].trim() };
+  return { name: clean, result: '' };
+}
+
+function addImportedActivity(text) {
+  if (!isMeaningfulImportValue(text)) return false;
+  const parsed = parseActivityText(text);
+  if (!parsed.name) return false;
+  const exists = state.activities.some(activity => activity.name === parsed.name && activity.result === parsed.result);
+  if (exists) return false;
+  state.activities.push({ id: Date.now() + Math.random(), name: parsed.name, result: parsed.result });
+  return true;
+}
+
+function applyImportedActivities(row) {
+  const activityValues = [
+    getRowValue(row, ['競賽展覽','科學展覽','科展','科學競賽']),
+    getRowValue(row, ['活動表演','校外活動','表演活動','活動參與']),
+    getRowValue(row, ['研習聽講','研習','講座']),
+    getRowValue(row, ['其他表現','校外其他特殊表現','其他校外表現'])
+  ];
+  let added = 0;
+  activityValues.forEach(value => {
+    splitImportItems(value).forEach(item => {
+      if (addImportedActivity(item)) added += 1;
+    });
+  });
+  renderActTags();
+  return added;
 }
 
 function importSelfEvalExcel(event) {
@@ -1520,9 +1673,10 @@ function renderSelfEvalStudentOptions(rows) {
   select.innerHTML = '<option value="">請選擇學生</option>';
   rows.forEach((row, index) => {
     const name = getStudentNameFromRow(row) || `第 ${index + 1} 筆`;
+    const seat = getRowValue(row, ['座號','座位','號碼']);
     const option = document.createElement('option');
     option.value = String(index);
-    option.textContent = name;
+    option.textContent = seat ? `${seat} ${name}` : name;
     select.appendChild(option);
   });
 }
@@ -1548,9 +1702,12 @@ function applySelectedSelfEvalRow() {
     document.getElementById('studentName').value = rowName;
   }
   selfEvalFields.forEach(field => {
-    document.getElementById(field.id).value = getRowValue(row, field.aliases);
+    document.getElementById(field.id).value = getCombinedRowValue(row, field.aliases);
   });
-  document.getElementById('selfEvalImportStatus').textContent = `已套用：${rowName || `第 ${idx + 1} 筆資料`}`;
+  const codeCount = applyImportedCodes(row);
+  const cadreCount = applyImportedCadres(row);
+  const activityCount = applyImportedActivities(row);
+  document.getElementById('selfEvalImportStatus').textContent = `已套用：${rowName || `第 ${idx + 1} 筆資料`}；評語代碼 ${codeCount} 筆、職務 ${cadreCount} 筆、活動競賽 ${activityCount} 筆`;
   showToast('✅ 已套用學生自評資料');
 }
 
@@ -1657,17 +1814,69 @@ function generateBase() {
 function updateAiProviderUI() {
   const provider = document.getElementById('aiProvider')?.value || 'local';
   const apiKeyRow = document.getElementById('apiKeyRow');
+  const modelPresetGroup = document.getElementById('geminiModelPresetGroup');
+  const customModelGroup = document.getElementById('geminiCustomModelGroup');
   const hint = document.getElementById('aiProviderHint');
   const badge = document.getElementById('aiModeBadge');
   if (provider === 'gemini') {
     apiKeyRow.style.display = 'grid';
-    hint.textContent = 'Gemini 模式會使用您輸入的 API Key 直接從瀏覽器送出文字，Key 僅儲存在本機瀏覽器。';
+    modelPresetGroup.style.display = 'flex';
+    updateGeminiModelPresetUI();
+    hint.textContent = 'Gemini 模式會使用您選擇的模型與 API Key 直接從瀏覽器送出文字，Key 與模型設定僅儲存在本機瀏覽器。';
     badge.textContent = 'Gemini AI 潤飾';
   } else {
     apiKeyRow.style.display = 'none';
+    modelPresetGroup.style.display = 'none';
+    customModelGroup.style.display = 'none';
     hint.textContent = '本機規則合併會直接在瀏覽器內完成，不會把文字送到雲端。';
     badge.textContent = '本機規則潤飾';
   }
+}
+
+function updateGeminiModelPresetUI() {
+  const preset = document.getElementById('geminiModelPreset')?.value || GEMINI_MODELS[0];
+  const customModelGroup = document.getElementById('geminiCustomModelGroup');
+  if (customModelGroup) {
+    customModelGroup.style.display = preset === 'custom' ? 'flex' : 'none';
+  }
+}
+
+function getSelectedGeminiModel() {
+  const preset = document.getElementById('geminiModelPreset')?.value || GEMINI_MODELS[0];
+  if (preset === 'custom') {
+    return document.getElementById('geminiCustomModel')?.value?.trim() || GEMINI_MODELS[0];
+  }
+  return preset;
+}
+
+function getGeminiModelFallbackList() {
+  const selected = getSelectedGeminiModel();
+  return [selected, ...GEMINI_MODELS.filter(model => model !== selected)];
+}
+
+function saveGeminiModelSetting() {
+  const preset = document.getElementById('geminiModelPreset')?.value || GEMINI_MODELS[0];
+  const custom = document.getElementById('geminiCustomModel')?.value?.trim() || '';
+  if (preset === 'custom' && !custom) {
+    showToast('⚠️ 請先輸入自訂模型名稱');
+    return;
+  }
+  localStorage.setItem('homeroomGeminiModelPreset', preset);
+  localStorage.setItem('homeroomGeminiCustomModel', custom);
+  showToast(`✅ 模型設定已儲存：${getSelectedGeminiModel()}`);
+}
+
+function loadGeminiModelSetting() {
+  const preset = localStorage.getItem('homeroomGeminiModelPreset') || GEMINI_MODELS[0];
+  const custom = localStorage.getItem('homeroomGeminiCustomModel') || '';
+  const presetInput = document.getElementById('geminiModelPreset');
+  const customInput = document.getElementById('geminiCustomModel');
+  if (presetInput) {
+    const values = Array.from(presetInput.options).map(option => option.value);
+    presetInput.value = values.includes(preset) ? preset : GEMINI_MODELS[0];
+  }
+  if (customInput) customInput.value = custom;
+  updateGeminiModelPresetUI();
 }
 
 function saveGeminiApiKey() {
@@ -1745,7 +1954,7 @@ async function callGemini(prompt) {
   if (!key) throw new Error('請先輸入 Gemini API Key');
 
   const errors = [];
-  for (const model of GEMINI_MODELS) {
+  for (const model of getGeminiModelFallbackList()) {
     try {
       return await callGeminiModel(model, prompt);
     } catch (err) {
