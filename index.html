@@ -6,6 +6,7 @@
 <title>導師評語生成系統（codex優化版）</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@300;400;500;700;900&family=Noto+Serif+TC:wght@400;600;700;900&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <style>
 :root {
@@ -824,8 +825,8 @@ textarea.form-input {
         <div class="import-tools">
           <div class="form-row" style="align-items:end;">
             <div class="form-group">
-              <label>從 Excel 匯入學生德性自評</label>
-              <input type="file" class="file-input" id="selfEvalExcelFile" accept=".xlsx,.xls,.csv" onchange="importSelfEvalExcel(event)">
+              <label>從 Excel／Word 匯入學生德性自評</label>
+              <input type="file" class="file-input" id="selfEvalExcelFile" accept=".xlsx,.xls,.csv,.docx" onchange="importSelfEvalExcel(event)">
             </div>
             <div class="form-group">
               <label>選擇學生列</label>
@@ -838,7 +839,7 @@ textarea.form-input {
             <button class="btn btn-outline" onclick="applySelectedSelfEvalRow()">套用選取學生資料</button>
             <button class="btn btn-outline" onclick="clearSelfEvalFields()">清空自評欄位</button>
           </div>
-          <div class="tool-hint">匯入後會依「姓名／學生姓名」欄位自動比對目前學生；表單中沒有填寫的項目會保留空白，方便老師再補寫。</div>
+          <div class="tool-hint">可匯入全班 Excel/CSV 回覆表，或單一學生 Word 自評表。匯入後會依「姓名／學生姓名」欄位自動比對目前學生；沒有填寫的項目會保留空白，方便老師再補寫。</div>
           <div class="status-line" id="selfEvalImportStatus"></div>
         </div>
         <div class="self-eval-group">
@@ -1643,6 +1644,11 @@ function applyImportedActivities(row) {
 function importSelfEvalExcel(event) {
   const file = event.target.files?.[0];
   if (!file) return;
+  const ext = file.name.split('.').pop().toLowerCase();
+  if (ext === 'docx') {
+    importSelfEvalDocx(file);
+    return;
+  }
   if (!window.XLSX) {
     showToast('⚠️ Excel 函式庫尚未載入，請確認網路後重新開啟檔案');
     return;
@@ -1666,6 +1672,134 @@ function importSelfEvalExcel(event) {
     }
   };
   reader.readAsArrayBuffer(file);
+}
+
+async function importSelfEvalDocx(file) {
+  if (!window.JSZip) {
+    showToast('⚠️ Word 解析函式庫尚未載入，請確認網路後重新開啟檔案');
+    return;
+  }
+  try {
+    const buffer = await file.arrayBuffer();
+    const zip = await JSZip.loadAsync(buffer);
+    const documentFile = zip.file('word/document.xml');
+    if (!documentFile) throw new Error('找不到 Word 文件內容');
+    const xmlText = await documentFile.async('text');
+    const doc = new DOMParser().parseFromString(xmlText, 'application/xml');
+    const row = parseDocxSelfEvalRow(doc, file.name);
+    state.importedSelfEvalRows = [row];
+    renderSelfEvalStudentOptions(state.importedSelfEvalRows);
+    document.getElementById('selfEvalStudentSelect').value = '0';
+    applySelectedSelfEvalRow();
+    document.getElementById('selfEvalImportStatus').textContent = `已匯入 Word 自評表：${file.name}`;
+    showToast('✅ Word 自評表已匯入');
+  } catch (err) {
+    console.error(err);
+    showToast('⚠️ Word 匯入失敗：' + err.message);
+  }
+}
+
+function parseDocxSelfEvalRow(doc, fileName) {
+  const ns = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
+  const tables = Array.from(doc.getElementsByTagNameNS(ns, 'tbl')).map(table =>
+    Array.from(table.getElementsByTagNameNS(ns, 'tr')).map(row =>
+      Array.from(row.getElementsByTagNameNS(ns, 'tc')).map(cell =>
+        Array.from(cell.getElementsByTagNameNS(ns, 'p'))
+          .map(p => Array.from(p.getElementsByTagNameNS(ns, 't')).map(t => t.textContent || '').join('').trim())
+          .filter(Boolean)
+          .join(' ')
+          .trim()
+      )
+    )
+  );
+  const paragraphs = Array.from(doc.getElementsByTagNameNS(ns, 'p'))
+    .map(p => Array.from(p.getElementsByTagNameNS(ns, 't')).map(t => t.textContent || '').join('').trim())
+    .filter(Boolean);
+  const row = {};
+  paragraphs.forEach(text => extractInlineDocxFields(text, row));
+  tables.forEach((table, index) => {
+    if (index === 0) parseDocxCodeTable(table, row);
+    else parseDocxPerformanceTable(table, row, index);
+  });
+  if (!row['姓名']) {
+    const guessed = fileName.replace(/\.[^.]+$/, '').match(/([\u4e00-\u9fa5]{2,4})/);
+    if (guessed) row['姓名'] = guessed[1];
+  }
+  return row;
+}
+
+function extractInlineDocxFields(text, row) {
+  const pairs = [
+    ['座號', /座號[:：]\s*([^姓名]+)/],
+    ['姓名', /姓名[:：]\s*(.+)$/],
+    ['個性描述', /個性描述[:：]\s*(.+)$/],
+    ['性情描述(正向)', /性情描述[:：]\s*(.+)$/],
+    ['向學描述', /向學描述[:：]\s*(.+)$/],
+    ['進取描述', /進取描述[:：]\s*(.+)$/],
+    ['紀律描述', /紀律描述[:：]\s*(.+)$/],
+    ['交友描述', /交友描述[:：]\s*(.+)$/],
+    ['服務描述', /服務描述[:：]\s*(.+)$/],
+    ['擅長描述', /擅長描述[:：]\s*(.+)$/]
+  ];
+  pairs.forEach(([key, regex]) => {
+    const match = text.match(regex);
+    if (match && isMeaningfulImportValue(match[1])) row[key] = cleanDocxValue(match[1]);
+  });
+}
+
+function parseDocxCodeTable(table, row) {
+  const keyMap = {
+    '性情描述': '性情描述(正向)',
+    '向學描述': '向學描述',
+    '進取描述': '進取描述',
+    '紀律描述': '紀律描述',
+    '交友描述': '交友描述',
+    '服務描述': '服務描述',
+    '擅長描述': '擅長描述'
+  };
+  table.flat().forEach(cell => {
+    Object.keys(keyMap).forEach(label => {
+      if (cell.includes(label)) {
+        const value = cleanDocxValue(cell.replace(label, '').replace(/^[:：]/, ''));
+        if (isMeaningfulImportValue(value)) row[keyMap[label]] = value;
+      }
+    });
+  });
+}
+
+function parseDocxPerformanceTable(table, row, tableIndex) {
+  const categoryMap = {
+    '學校服務類': '學校服務',
+    '社團表現類': '社團表現',
+    '學業表現類': '學業表現',
+    '生活常規類': '生活常規',
+    '社會服務類': '社會服務',
+    '活動表演類': '活動表演',
+    '科學展覽類': '科學展覽',
+    '其他特殊表現': tableIndex === 1 ? '校內其他特殊表現' : '校外其他特殊表現'
+  };
+  let currentKey = '';
+  table.forEach(rowCells => {
+    const categoryLabel = Object.keys(categoryMap).find(label => rowCells.some(cell => cell.includes(label)));
+    if (categoryLabel) currentKey = categoryMap[categoryLabel];
+    if (!currentKey) return;
+    const values = rowCells
+      .filter(cell => !Object.keys(categoryMap).some(label => cell.includes(label)))
+      .map(cleanDocxValue)
+      .filter(isMeaningfulImportValue);
+    if (!values.length) return;
+    const oldValue = row[currentKey] || '';
+    row[currentKey] = [oldValue, ...values].filter(Boolean).join('；');
+  });
+}
+
+function cleanDocxValue(value) {
+  return String(value || '')
+    .replace(/^(一|二|三|四|五|六|七|八|九|十)$/g, '')
+    .replace(/高[一二三][上下]/g, '')
+    .replace(/^(個性描述|性情描述|向學描述|進取描述|紀律描述|交友描述|服務描述|擅長描述)[:：]?/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 function renderSelfEvalStudentOptions(rows) {
