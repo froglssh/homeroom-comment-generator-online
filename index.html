@@ -520,6 +520,39 @@ textarea.form-input {
 @media (max-width: 640px) {
   .api-key-row { grid-template-columns: 1fr; }
 }
+.single-import-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.78rem;
+  margin-top: 10px;
+  background: white;
+  border: 1px solid var(--paper-dark);
+}
+.single-import-table th,
+.single-import-table td {
+  border-bottom: 1px solid var(--paper-dark);
+  padding: 6px 8px;
+  vertical-align: top;
+}
+.single-import-table th {
+  background: var(--blue-bg);
+  color: var(--blue);
+  text-align: left;
+  font-weight: 700;
+}
+.single-import-table textarea {
+  width: 100%;
+  min-height: 44px;
+  border: 1px solid var(--paper-dark);
+  border-radius: 6px;
+  padding: 6px;
+  font-family: 'Noto Sans TC', sans-serif;
+  resize: vertical;
+}
+.single-import-table select {
+  width: 100%;
+  min-width: 130px;
+}
 
 /* === RIGHT PANEL - OUTPUT === */
 .output-step {
@@ -762,6 +795,21 @@ textarea.form-input {
             <button class="toggle-btn" data-val="strict" onclick="setToggle('tone','strict',this)">委婉規勸</button>
           </div>
         </div>
+      </div>
+      <div class="import-tools">
+        <div class="form-row" style="align-items:end;">
+          <div class="form-group">
+            <label>單一學生 Excel 智慧匯入</label>
+            <input type="file" class="file-input" id="singleStudentExcelFile" accept=".xlsx,.xls,.csv" onchange="analyzeSingleStudentExcel(event)">
+          </div>
+          <div class="form-group">
+            <label>匯入方式</label>
+            <button class="btn btn-teal" onclick="applySingleStudentMappings()">套用勾選欄位</button>
+          </div>
+        </div>
+        <div class="tool-hint">適用其他系統匯出的單一學生 Excel。系統會先智慧判斷欄位對應，老師可手動調整「匯入位置」與內容後再套用。</div>
+        <div class="status-line" id="singleImportStatus"></div>
+        <div id="singleImportPreview"></div>
       </div>
     </div>
 
@@ -1029,6 +1077,7 @@ const state = {
   activities: [],
   traits: { academic: {}, social: {}, habit: {}, personality: {} },
   importedSelfEvalRows: [],
+  singleStudentMappings: [],
   roleFilter: 'all'
 };
 
@@ -1490,6 +1539,242 @@ function setToggle(field, val, btn) {
 function toggleCollapse(header, bodyId) {
   header.classList.toggle('collapsed');
   document.getElementById(bodyId).classList.toggle('hidden');
+}
+
+// ============================
+// SINGLE STUDENT EXCEL SMART IMPORT
+// ============================
+const singleImportTargets = [
+  ['ignore','不匯入'],
+  ['studentName','基本設定：學生姓名'],
+  ['gender','基本設定：性別'],
+  ['codes','學校評語代碼'],
+  ['cadres','職務與特殊表現：擔任職務'],
+  ['activities','職務與特殊表現：校內外活動／競賽'],
+  ['selfSchoolService','學生自評：學校服務'],
+  ['selfClub','學生自評：社團表現'],
+  ['selfAcademic','學生自評：學業表現'],
+  ['selfDailyLife','學生自評：生活常規'],
+  ['selfSpecialIn','學生自評：校內其他特殊表現'],
+  ['selfSocialService','學生自評：社會服務'],
+  ['selfPerformance','學生自評：活動表演'],
+  ['selfScienceFair','學生自評：科學展覽'],
+  ['selfSpecialOut','學生自評：校外其他特殊表現'],
+  ['finalComment','正式欄位：文字描述評語／德行評語'],
+  ['specialPerformance','正式欄位：特殊優良表現'],
+  ['freeInput','補充觀察']
+];
+
+function analyzeSingleStudentExcel(event) {
+  const file = event.target.files?.[0];
+  if (!file) return;
+  if (!window.XLSX) {
+    showToast('⚠️ Excel 函式庫尚未載入，請確認網路後重新開啟檔案');
+    return;
+  }
+  const reader = new FileReader();
+  reader.onload = e => {
+    try {
+      const workbook = XLSX.read(new Uint8Array(e.target.result), { type: 'array' });
+      const sheetName = workbook.SheetNames[0];
+      const matrix = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { header: 1, defval: '' });
+      const candidates = extractSingleStudentCandidates(matrix, sheetName);
+      state.singleStudentMappings = candidates.map(candidate => ({
+        ...candidate,
+        target: guessSingleImportTarget(candidate.source, candidate.value)
+      }));
+      renderSingleImportPreview();
+      document.getElementById('singleImportStatus').textContent = `已分析 ${file.name}，工作表：${sheetName}，可匯入欄位 ${state.singleStudentMappings.filter(m => m.target !== 'ignore').length} 筆`;
+      showToast('✅ 單一學生 Excel 已分析');
+    } catch (err) {
+      console.error(err);
+      showToast('⚠️ 單一學生 Excel 分析失敗：' + err.message);
+    }
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+function extractSingleStudentCandidates(matrix, sheetName) {
+  const candidates = [];
+  let currentSection = '';
+  const addCandidate = (source, value, cell = '') => {
+    const cleanSource = String(source || '').replace(/\s+/g, ' ').trim();
+    const cleanValue = String(value || '').replace(/\r\n/g, '\n').trim();
+    if (!isMeaningfulImportValue(cleanSource) || !isMeaningfulImportValue(cleanValue)) return;
+    if (isSensitiveSingleImportSource(cleanSource)) return;
+    const id = `${cleanSource}::${cleanValue}`;
+    if (candidates.some(item => `${item.source}::${item.value}` === id)) return;
+    candidates.push({ source: cleanSource, value: cleanValue, cell, sheetName });
+  };
+
+  matrix.forEach((row, rIdx) => {
+    const cells = row.map(cell => String(cell ?? '').trim());
+    const first = cells.find(Boolean) || '';
+    if (/^[一二三四五六七八九十]、/.test(first)) currentSection = first;
+
+    for (let c = 0; c < cells.length - 1; c += 1) {
+      if (isLikelySingleImportLabel(cells[c]) && isMeaningfulImportValue(cells[c + 1])) {
+        addCandidate(cells[c], cells[c + 1], `${rIdx + 1}:${c + 1}`);
+      }
+    }
+
+    const nonEmpty = cells.filter(Boolean);
+    if (nonEmpty.length >= 2 && isLikelySingleImportLabel(nonEmpty[0])) {
+      addCandidate(currentSection ? `${currentSection}／${nonEmpty[0]}` : nonEmpty[0], nonEmpty.slice(1).join('；'), `${rIdx + 1}:1`);
+    }
+
+    if (cells.includes('學期')) {
+      const headers = cells;
+      for (let rr = rIdx + 1; rr < matrix.length; rr += 1) {
+        const data = (matrix[rr] || []).map(cell => String(cell ?? '').trim());
+        const firstData = data.find(Boolean) || '';
+        if (!firstData) continue;
+        if (/^[一二三四五六七八九十]、/.test(firstData)) break;
+        headers.forEach((header, cIdx) => {
+          if (cIdx === 0 || !isMeaningfulImportValue(header)) return;
+          const value = data[cIdx];
+          if (isMeaningfulImportValue(value)) addCandidate(currentSection ? `${currentSection}／${header}` : header, value, `${rr + 1}:${cIdx + 1}`);
+        });
+        break;
+      }
+    }
+  });
+  return candidates;
+}
+
+function isSensitiveSingleImportSource(source) {
+  return /手機|住址|身分證|生日|父|母|電子郵件|email/i.test(source);
+}
+
+function isLikelySingleImportLabel(text) {
+  if (!isMeaningfulImportValue(text)) return false;
+  return /姓名|性別|幹部|小老師|評語|日常表現|特殊表現|個性|性情|向學|進取|紀律|交友|服務|擅長|學校服務|社團|學業|生活常規|科學展覽|研習|其他表現|成績|班排|類組排|較強科目|較弱科目|活動|競賽|專題研究/.test(text);
+}
+
+function guessSingleImportTarget(source, value) {
+  const text = `${source} ${value}`;
+  if (/姓名/.test(source)) return 'studentName';
+  if (/性別/.test(source)) return 'gender';
+  if (/評語代號|性情描述|向學描述|進取描述|紀律描述|交友描述|服務描述|擅長描述/.test(source)) return 'codes';
+  if (/幹部|小老師|職位工作/.test(source)) return 'cadres';
+  if (/文字描述評語/.test(source)) return 'finalComment';
+  if (/特殊表現/.test(source) && /^[三四五六七八九十]、導師評語/.test(source)) return 'specialPerformance';
+  if (/特殊表現/.test(source) && /五、特殊表現/.test(source)) return 'specialPerformance';
+  if (/日常表現/.test(source)) return 'codes';
+  if (/學校服務/.test(source)) return 'selfSchoolService';
+  if (/社團/.test(source)) return 'selfClub';
+  if (/學業|成績|班排|類組排|較強科目|較弱科目/.test(source)) return 'selfAcademic';
+  if (/生活常規/.test(source)) return 'selfDailyLife';
+  if (/社會服務/.test(source)) return 'selfSocialService';
+  if (/活動表演/.test(source)) return 'selfPerformance';
+  if (/科學展覽|專題研究|科展/.test(source)) return 'selfScienceFair';
+  if (/研習聽講|其他表現/.test(source)) return 'selfSpecialOut';
+  if (/活動|競賽/.test(source) || /獲得|榮獲|比賽|競賽|科展/.test(text)) return 'activities';
+  return 'ignore';
+}
+
+function renderSingleImportPreview() {
+  const container = document.getElementById('singleImportPreview');
+  if (!state.singleStudentMappings.length) {
+    container.innerHTML = '';
+    return;
+  }
+  const targetOptions = singleImportTargets.map(([value, label]) => `<option value="${value}">${label}</option>`).join('');
+  const rows = state.singleStudentMappings.map((item, index) => `
+    <tr>
+      <td><input type="checkbox" data-single-check="${index}" ${item.target !== 'ignore' ? 'checked' : ''}></td>
+      <td>${escapeHtml(item.source)}<div style="color:var(--ink-muted);font-size:0.7rem;">${escapeHtml(item.sheetName)} ${escapeHtml(item.cell)}</div></td>
+      <td><textarea data-single-value="${index}">${escapeHtml(item.value)}</textarea></td>
+      <td><select class="form-input" data-single-target="${index}">${targetOptions}</select></td>
+    </tr>
+  `).join('');
+  container.innerHTML = `
+    <table class="single-import-table">
+      <thead><tr><th style="width:44px;">用</th><th style="width:28%;">來源欄位</th><th>內容</th><th style="width:190px;">匯入位置</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+  `;
+  state.singleStudentMappings.forEach((item, index) => {
+    const select = container.querySelector(`[data-single-target="${index}"]`);
+    if (select) select.value = item.target;
+  });
+}
+
+function applySingleStudentMappings() {
+  if (!state.singleStudentMappings.length) {
+    showToast('請先選擇並分析單一學生 Excel');
+    return;
+  }
+  const container = document.getElementById('singleImportPreview');
+  let applied = 0;
+  state.singleStudentMappings.forEach((item, index) => {
+    const checked = container.querySelector(`[data-single-check="${index}"]`)?.checked;
+    const target = container.querySelector(`[data-single-target="${index}"]`)?.value || 'ignore';
+    const value = container.querySelector(`[data-single-value="${index}"]`)?.value?.trim() || '';
+    if (!checked || target === 'ignore' || !isMeaningfulImportValue(value)) return;
+    applySingleImportTarget(target, value, item.source);
+    applied += 1;
+  });
+  renderCodeItems();
+  renderCodeTags();
+  renderCadreTags();
+  renderActTags();
+  updateCharCount('finalComment','finalCharCount');
+  document.getElementById('singleImportStatus').textContent = `已套用 ${applied} 筆欄位。`;
+  showToast(`✅ 已套用 ${applied} 筆單一學生資料`);
+}
+
+function applySingleImportTarget(target, value, source) {
+  const appendField = id => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.value = compactImportText([el.value, value]);
+  };
+  if (target === 'studentName') document.getElementById('studentName').value = value;
+  else if (target === 'gender') applyImportedGender(value);
+  else if (target === 'codes') applySingleImportCodes(value);
+  else if (target === 'cadres') {
+    const type = /小老師/.test(source) ? 'teacher' : 'cadre';
+    splitImportItems(value).forEach(item => addImportedCadre(item, type));
+  } else if (target === 'activities') {
+    splitImportItems(value).forEach(item => addImportedActivity(item));
+  } else if (target === 'finalComment') {
+    document.getElementById('finalComment').value = value;
+    document.getElementById('dlComment').value = value;
+  } else if (target === 'specialPerformance') {
+    document.getElementById('dlSpecialPerformance').value = value;
+  } else if (target === 'freeInput') appendField('freeInput');
+  else appendField(target);
+}
+
+function compactImportText(items) {
+  return items
+    .flatMap(item => String(item || '').split(/[；;\n]+/))
+    .map(item => item.trim())
+    .filter(isMeaningfulImportValue)
+    .filter((item, index, arr) => arr.indexOf(item) === index)
+    .join('；');
+}
+
+function applySingleImportCodes(value) {
+  const codes = String(value || '').match(/\d{3}/g) || [];
+  codes.forEach(code => {
+    if (findSchoolCommentText(code) && !state.selectedCodes.includes(code)) state.selectedCodes.push(code);
+  });
+  if (!codes.length) {
+    Object.values(schoolCommentDB).forEach(cat => {
+      cat.items.forEach(item => {
+        if (String(value).includes(item.text) && !state.selectedCodes.includes(item.code)) state.selectedCodes.push(item.code);
+      });
+    });
+  }
+}
+
+function applyImportedGender(value) {
+  const gender = /女/.test(value) ? 'girl' : /男/.test(value) ? 'boy' : '';
+  if (!gender) return;
+  const button = document.querySelector(`#genderToggle [data-val="${gender}"]`);
+  if (button) setToggle('gender', gender, button);
 }
 
 // ============================
@@ -2441,6 +2726,9 @@ function showToast(msg) {
 function clearAll() {
   if (!confirm('確定要重置所有資料嗎？')) return;
   document.getElementById('studentName').value = '';
+  document.getElementById('singleStudentExcelFile').value = '';
+  document.getElementById('singleImportPreview').innerHTML = '';
+  document.getElementById('singleImportStatus').textContent = '';
   document.getElementById('baseComment').value = '';
   document.getElementById('freeInput').value = '';
   document.getElementById('finalComment').value = '';
@@ -2465,6 +2753,7 @@ function clearAll() {
   state.cadres = [];
   state.activities = [];
   state.importedSelfEvalRows = [];
+  state.singleStudentMappings = [];
   state.roleFilter = 'all';
   state.traits = { academic:{}, social:{}, habit:{}, personality:{} };
   state.gender = 'boy';
