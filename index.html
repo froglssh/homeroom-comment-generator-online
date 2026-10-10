@@ -758,10 +758,36 @@ textarea.form-input {
       <div class="subtitle" style="margin-top:2px;">臺北市立麗山高中 生物科 林獻升老師製作 ─ <a href="mailto:frog@lssh.tp.edu.tw" style="color:var(--teal-light);text-decoration:none;">frog@lssh.tp.edu.tw</a></div>
     </div>
     <div class="header-actions">
-      <button class="btn btn-secondary" onclick="clearAll()">🗑 重置</button>
+      <button class="btn btn-secondary" onclick="clearAll()">＋ 新草稿</button>
     </div>
   </div>
 </header>
+
+<style>
+.draft-workspace{max-width:1400px;margin:16px auto;padding:18px;border:1px solid #c9d9e9;border-radius:14px;background:#f5f9ff;color:#263449}
+.draft-context{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px;margin:10px 0}.draft-context label{display:flex;flex-direction:column;gap:5px;font-size:14px}.draft-actions{display:flex;flex-wrap:wrap;gap:8px;align-items:center}.draft-actions select{min-width:0;flex:1;max-width:100%}.draft-workspace select,.draft-workspace input{width:100%;min-width:0;padding:9px;border:1px solid #bac9d9;border-radius:7px;background:white;color:#263449;box-sizing:border-box}.draft-workspace button{white-space:normal}.draft-workspace .btn-secondary{background:#e4edf7;color:#243c53;border:1px solid #aebfd2}.draft-workspace .btn-secondary:hover{background:#d4e3f3}.draft-status{font-size:14px;overflow-wrap:anywhere;margin-top:9px}@media(max-width:650px){.draft-workspace{margin:10px}.draft-context{grid-template-columns:repeat(2,minmax(0,1fr))}.draft-actions select{flex-basis:100%}}
+</style>
+<section class="draft-workspace" aria-label="學生與學期草稿管理">
+<strong>學生與學期草稿管理</strong>
+<div class="draft-context">
+<label>班級<input id="draftClass" placeholder="例如 201"></label>
+<label>學年<input id="draftYear" placeholder="例如 115" inputmode="numeric"></label>
+<label>學期<select id="draftSemester"><option value="1">上學期</option><option value="2">下學期</option><option value="summer">暑期</option></select></label>
+<label>座號<input id="draftSeat" placeholder="選填"></label>
+<label>學號<input id="draftStudentNo" placeholder="選填"></label>
+</div>
+<div class="draft-actions">
+<select id="draftLibrary" aria-label="已保存的學生學期草稿"></select>
+<button class="btn btn-teal" id="draftSave">立即儲存</button>
+<button class="btn btn-secondary" id="draftNew">＋ 新增學生／學期</button>
+<button class="btn btn-secondary" id="draftReload">讀取已存版本</button>
+<button class="btn btn-secondary" id="draftExport">備份全部草稿 JSON</button>
+<button class="btn btn-secondary" id="draftImport">匯入草稿 JSON</button>
+<input type="file" id="draftImportFile" accept=".json,application/json" hidden>
+</div>
+<p class="draft-status" id="draftStatus" role="status">準備草稿管理…</p>
+<p class="draft-status">同名學生以獨立草稿識別碼區分。新增另一位學生或另一學期時，請先按「新增學生／學期」；切換會先儲存。API 金鑰不包含在草稿或備份中。</p>
+</section>
 
 <!-- MAIN -->
 <div class="main-grid">
@@ -1438,7 +1464,7 @@ function renderCadreTags() {
   state.cadres.forEach(c => {
     const tag = document.createElement('span');
     tag.className = 'tag tag-gold';
-    tag.innerHTML = `${c.role}（${perfMap[c.perf]}）<span class="remove-tag" onclick="removeCadre(${c.id})">&times;</span>`;
+    tag.innerHTML = `${escapeHtml(c.role)}（${perfMap[c.perf]}）<span class="remove-tag" onclick="removeCadre(${c.id})">&times;</span>`;
     container.appendChild(tag);
   });
 }
@@ -1464,7 +1490,7 @@ function renderActTags() {
   state.activities.forEach(a => {
     const tag = document.createElement('span');
     tag.className = 'tag tag-gold';
-    tag.innerHTML = `${a.name}${a.result ? '（' + a.result + '）' : ''} <span class="remove-tag" onclick="removeActivity(${a.id})">&times;</span>`;
+    tag.innerHTML = `${escapeHtml(a.name)}${a.result ? '（' + escapeHtml(a.result) + '）' : ''} <span class="remove-tag" onclick="removeActivity(${a.id})">&times;</span>`;
     container.appendChild(tag);
   });
 }
@@ -1561,8 +1587,10 @@ function analyzeSingleStudentExcel(event) {
     showToast('⚠️ Excel 函式庫尚未載入，請確認網路後重新開啟檔案');
     return;
   }
+  const draftOwner = window.CommentDrafts?.activeId;
   const reader = new FileReader();
   reader.onload = e => {
+    if (draftOwner && draftOwner !== window.CommentDrafts?.activeId) { showToast('草稿已切換，請在目標學生重新匯入。'); return; }
     try {
       const workbook = XLSX.read(new Uint8Array(e.target.result), { type: 'array' });
       const sheetName = workbook.SheetNames[0];
@@ -1928,8 +1956,10 @@ function importSelfEvalExcel(event) {
     return;
   }
 
+  const draftOwner = window.CommentDrafts?.activeId;
   const reader = new FileReader();
   reader.onload = e => {
+    if (draftOwner && draftOwner !== window.CommentDrafts?.activeId) { showToast('草稿已切換，請在目標學生重新匯入。'); return; }
     try {
       const data = new Uint8Array(e.target.result);
       const workbook = XLSX.read(data, { type: 'array' });
@@ -1949,6 +1979,7 @@ function importSelfEvalExcel(event) {
 }
 
 async function importSelfEvalDocx(file) {
+  const draftOwner = window.CommentDrafts?.activeId;
   if (!window.JSZip) {
     showToast('⚠️ Word 解析函式庫尚未載入，請確認網路後重新開啟檔案');
     return;
@@ -1960,6 +1991,7 @@ async function importSelfEvalDocx(file) {
     if (!documentFile) throw new Error('找不到 Word 文件內容');
     const xmlText = await documentFile.async('text');
     const doc = new DOMParser().parseFromString(xmlText, 'application/xml');
+    if (draftOwner && draftOwner !== window.CommentDrafts?.activeId) { showToast('草稿已切換，請重新匯入。'); return; }
     const row = parseDocxSelfEvalRow(doc, file.name);
     state.importedSelfEvalRows = [row];
     renderSelfEvalStudentOptions(state.importedSelfEvalRows);
@@ -2211,7 +2243,6 @@ function generateBase() {
   }
 
   document.getElementById('baseComment').value = parts.join('');
-  document.getElementById('finalComment').value = '';
   updateCharCount('baseComment','baseCharCount');
   showToast('✅ 基礎評語已生成');
 }
@@ -2552,22 +2583,22 @@ function localMerge(base, free) {
 // ============================
 // DAILY LIFE SYNC
 // ============================
-function syncDailyLife() {
+function syncDailyLife(force = true) {
   // Codes
   document.getElementById('dlCodes').value = state.selectedCodes.join('、');
   
   // Cadres
   const perfMap = { responsible:'認真負責', leadership:'具領導力', passive:'較被動', improve:'待加強' };
-  document.getElementById('dlCadre').value = state.cadres.map(c => `${c.role}（${perfMap[c.perf]}）`).join('、');
+  if (force || !document.getElementById('dlCadre').value.trim()) document.getElementById('dlCadre').value = state.cadres.map(c => `${c.role}（${perfMap[c.perf]}）`).join('、');
   
   // Activities
-  document.getElementById('dlActivity').value = state.activities.map(a => a.result ? `${a.name}（${a.result}）` : a.name).join('、');
+  if (force || !document.getElementById('dlActivity').value.trim()) document.getElementById('dlActivity').value = state.activities.map(a => a.result ? `${a.name}（${a.result}）` : a.name).join('、');
   
   // Final comment
   document.getElementById('dlComment').value = document.getElementById('finalComment').value;
 
   // Special performance
-  document.getElementById('dlSpecialPerformance').value = buildSpecialPerformanceSummary();
+  if (force || !document.getElementById('dlSpecialPerformance').value.trim()) document.getElementById('dlSpecialPerformance').value = buildSpecialPerformanceSummary();
   
   showToast('🔄 已同步至日常生活表現表');
 }
@@ -2644,7 +2675,7 @@ function getSelectedCodeTexts() {
 }
 
 function getCurrentExportRecord() {
-  syncDailyLife();
+  syncDailyLife(false);
   const perfMap = { responsible:'認真負責', leadership:'具領導力', passive:'較被動', improve:'待加強' };
   const record = {
     學生姓名: document.getElementById('studentName').value.trim(),
@@ -2879,5 +2910,197 @@ function clearAll() {
 document.addEventListener('DOMContentLoaded', init);
 </script>
 
+<script>
+// Per-record persistence. No API credentials or whole-class imported rows enter a draft.
+(() => {
+  const PREFIX = 'lssh.comment.draft.v1:';
+  const ACTIVE_KEY = 'lssh.comment.active.v1';
+  const fieldIds = ['studentName','cadreRole','cadrePerf','actName','actResult','teacherEncouragement','baseComment','freeInput','finalComment','dlCodes','dlCadre','dlActivity','dlComment','dlSpecialPerformance', ...selfEvalFields.map(f => f.id)];
+  const contextIds = ['draftClass','draftYear','draftSemester','draftSeat','draftStudentNo'];
+  const stateKeys = ['gender','tone','selectedCodes','cadres','activities','traits','roleFilter'];
+  let activeId = crypto.randomUUID(), revision = 0, restoring = false, timer, changed = false, conflict = false, initialized = false, lastContent = '';
+  const el = id => document.getElementById(id);
+  const clone = data => JSON.parse(JSON.stringify(data));
+  const status = text => { el('draftStatus').textContent = text; };
+  const busy = () => el('mergeBtn').disabled;
+  function capture() {
+    return { context: Object.fromEntries(contextIds.map(id => [id, el(id).value])), fields: Object.fromEntries(fieldIds.map(id => [id, el(id).value])), formState: Object.fromEntries(stateKeys.map(key => [key, clone(state[key])])) };
+  }
+  function validateRecord(record) {
+    if (!record || record.schemaVersion !== 1 || typeof record.id !== 'string' || !/^[a-zA-Z0-9-]{1,100}$/.test(record.id) || !record.content || typeof record.content !== 'object') throw new Error('草稿格式不正確');
+    const {context, fields, formState} = record.content;
+    if (!context || !fields || !formState || !contextIds.every(id => typeof context[id] === 'string') || !fieldIds.every(id => typeof fields[id] === 'string')) throw new Error('草稿欄位不完整');
+    if (!['boy','girl'].includes(formState.gender) || !['encouraging','neutral','strict'].includes(formState.tone) || !['all','cadre','teacher'].includes(formState.roleFilter) || !Array.isArray(formState.selectedCodes) || !formState.selectedCodes.every(v => typeof v === 'string' && Object.values(schoolCommentDB).some(group => group.items.some(item => item.code === v))) || !Array.isArray(formState.cadres) || !formState.cadres.every(v => v && typeof v.role === 'string' && Number.isSafeInteger(v.id) && ['responsible','leadership','passive','improve'].includes(v.perf)) || !Array.isArray(formState.activities) || !formState.activities.every(v => v && typeof v.name === 'string' && Number.isSafeInteger(v.id) && typeof v.result === 'string')) throw new Error('草稿選項格式不正確');
+    if (!formState.traits || !['academic','social','habit','personality'].every(k => formState.traits[k] && typeof formState.traits[k] === 'object' && !Array.isArray(formState.traits[k]))) throw new Error('草稿特質格式不正確');
+    // Rebuild from a whitelist; imported extra fields (including credentials) are discarded.
+    return { schemaVersion: 1, id: record.id, revision: Number.isSafeInteger(record.revision) ? record.revision : 0,
+      updatedAt: typeof record.updatedAt === 'string' ? record.updatedAt : '',
+      content: { context: Object.fromEntries(contextIds.map(id => [id, context[id]])), fields: Object.fromEntries(fieldIds.map(id => [id, fields[id]])), formState: Object.fromEntries(stateKeys.map(k => [k, clone(formState[k])])) } };
+  }
+  function records() {
+    const result = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key?.startsWith(PREFIX)) {
+        try { result.push(validateRecord(JSON.parse(localStorage.getItem(key)))); }
+        catch (error) { /* Preserve unreadable entries; never overwrite them. */ }
+      }
+    }
+    return result.sort((a,b) => b.updatedAt.localeCompare(a.updatedAt));
+  }
+  function label(record) {
+    const {context:c,fields:f} = record.content;
+    return `${c.draftClass || '未命名班級'}｜${c.draftYear || '未填學年'} ${c.draftSemester === '2' ? '下' : c.draftSemester === 'summer' ? '暑期' : '上'}｜${c.draftSeat || '無座號'} ${f.studentName || '未命名學生'}｜${record.id.slice(0,6)}`;
+  }
+  function library() {
+    const select = el('draftLibrary'); select.replaceChildren();
+    const list = records();
+    if (!list.some(record => record.id === activeId)) { const option = new Option('目前新草稿（尚未儲存）', activeId); select.add(option); }
+    list.forEach(record => select.add(new Option(label(record), record.id)));
+    select.value = activeId;
+  }
+  function save(force = false) {
+    clearTimeout(timer);
+    if (!initialized || restoring) return true;
+    if (conflict) { status('⚠ 未儲存：另一分頁已更新此草稿。請先備份本頁，再讀取已存版本。'); return false; }
+    const content = capture(), serialized = JSON.stringify(content);
+    if (!force && !changed && serialized === lastContent) return true;
+    try {
+      const raw = localStorage.getItem(PREFIX + activeId);
+      const stored = raw === null ? null : validateRecord(JSON.parse(raw));
+      if ((stored?.revision || 0) !== revision) { conflict = true; status('⚠ 未儲存：版本已更新，請先備份本頁，再讀取已存版本。'); return false; }
+      const record = { schemaVersion:1, id:activeId, revision:revision + 1, updatedAt:new Date().toISOString(), content };
+      localStorage.setItem(PREFIX + activeId, JSON.stringify(record));
+      revision = record.revision; changed = false; lastContent = serialized;
+      // The active-pointer is optional; failure here must not invalidate a saved record.
+      try { localStorage.setItem(ACTIVE_KEY, activeId); sessionStorage.setItem(ACTIVE_KEY, activeId); } catch {}
+      library(); status(`✓ 已儲存：${label(record)}（${new Date().toLocaleTimeString('zh-TW')}）`); return true;
+    } catch (error) { status('⚠ 未儲存：' + error.message + '。畫面內容保留，請立即備份草稿 JSON。'); return false; }
+  }
+  function apply(record) {
+    restoring = true; clearTimeout(timer);
+    try {
+      const {content} = validateRecord(record);
+      contextIds.forEach(id => { el(id).value = content.context[id]; });
+      fieldIds.forEach(id => { el(id).value = content.fields[id]; });
+      stateKeys.forEach(key => { state[key] = clone(content.formState[key]); });
+      state.importedSelfEvalRows = []; state.singleStudentMappings = [];
+      el('selfEvalStudentSelect').replaceChildren(new Option('尚未匯入',''));
+      el('selfEvalImportStatus').textContent = ''; el('singleImportStatus').textContent = ''; el('singleImportPreview').replaceChildren();
+      el('singleStudentExcelFile').value = ''; el('selfEvalExcelFile').value = '';
+      document.querySelectorAll('#genderToggle .toggle-btn').forEach(b => b.classList.toggle('active', b.dataset.val === state.gender));
+      document.querySelectorAll('#toneToggle .toggle-btn').forEach(b => b.classList.toggle('active', b.dataset.val === state.tone));
+      renderCodeTags(); renderCodeItems(); renderRoleFilters(); renderQuickRoles(); renderCadreTags(); renderActTags(); renderTraits();
+      updateCharCount('baseComment','baseCharCount'); updateCharCount('finalComment','finalCharCount');
+      activeId = record.id; revision = record.revision || 0; changed = false; conflict = false; lastContent = JSON.stringify(capture());
+      try { sessionStorage.setItem(ACTIVE_KEY, activeId); localStorage.setItem(ACTIVE_KEY, activeId); } catch {}
+    } finally { restoring = false; }
+    library(); status('✓ 已讀取：' + label(record));
+  }
+  function queue() {
+    if (!initialized || restoring) return;
+    changed = true; status('儲存中…'); clearTimeout(timer); timer = setTimeout(() => save(), 250);
+  }
+  function newDraft() {
+    if (busy()) { showToast('請等目前潤飾完成，再切換草稿。'); return; }
+    if (!save()) return;
+    const previous = capture();
+    const blank = {schemaVersion:1,id:crypto.randomUUID(),revision:0,content:{
+      context:{...previous.context,draftSeat:'',draftStudentNo:''},
+      fields:Object.fromEntries(fieldIds.map(id => [id,id === 'cadrePerf' ? 'responsible' : ''])),
+      formState:{gender:'boy',tone:'encouraging',selectedCodes:[],cadres:[],activities:[],traits:{academic:{},social:{},habit:{},personality:{}},roleFilter:'all'}
+    }};
+    apply(blank); changed = true; save(); el('studentName').focus(); showToast('已新增獨立草稿，原草稿保留。');
+  }
+  function switchDraft(id) {
+    if (busy()) { showToast('請等目前潤飾完成，再切換草稿。'); library(); return; }
+    if (!save()) { library(); return; }
+    try { const record = validateRecord(JSON.parse(localStorage.getItem(PREFIX + id))); apply(record); }
+    catch (error) { status('無法讀取：' + error.message + '，目前內容保留。'); library(); }
+  }
+  function reload() {
+    if (busy()) { showToast('請等目前潤飾完成。'); return; }
+    if ((changed || conflict) && !confirm('讀取已存版本會取代目前畫面。若有未儲存修改，請先按「備份全部草稿 JSON」。確定讀取？')) return;
+    try { apply(validateRecord(JSON.parse(localStorage.getItem(PREFIX + activeId)))); }
+    catch (error) { status('無法讀取，畫面內容保留：' + error.message); }
+  }
+  function exportBackup() {
+    const list = records(), current = {schemaVersion:1,id:activeId,revision,updatedAt:new Date().toISOString(),content:capture()};
+    const index = list.findIndex(row => row.id === activeId);
+    if (index >= 0) {
+      if (JSON.stringify(list[index].content) !== JSON.stringify(current.content)) list.push({...current,id:crypto.randomUUID(),unsavedCopyOf:activeId});
+    } else list.push(current);
+    downloadBlob(new Blob([JSON.stringify({appName:'導師評語草稿',schemaVersion:1,exportedAt:new Date().toISOString(),drafts:list},null,2)],{type:'application/json;charset=utf-8'}),`評語草稿備份_${new Date().toISOString().slice(0,10)}.json`);
+    showToast('草稿 JSON 已下載，包含目前尚未儲存內容；不含 API 金鑰。');
+  }
+  async function importBackup(file) {
+    if (!file || busy()) return;
+    if (!save()) return;
+    const owner = activeId;
+    const touched = [];
+    try {
+      const backup = JSON.parse(await file.text());
+      if (activeId !== owner || busy()) throw new Error('目前草稿已切換，請重新匯入');
+      if (backup?.appName !== '導師評語草稿' || backup.schemaVersion !== 1 || !Array.isArray(backup.drafts)) throw new Error('不是支援的評語草稿備份');
+      const incoming = backup.drafts.map(validateRecord); // Validate all before any write.
+      let added = 0;
+      for (const record of incoming) {
+        const raw = localStorage.getItem(PREFIX + record.id);
+        if (raw) {
+          let old; try { old = validateRecord(JSON.parse(raw)); } catch {}
+          if (old && JSON.stringify(old.content) === JSON.stringify(record.content)) continue;
+          record.id = crypto.randomUUID(); // Preserve both conflicting records.
+        }
+        record.revision = 1; record.updatedAt = new Date().toISOString();
+        localStorage.setItem(PREFIX + record.id, JSON.stringify(record)); touched.push(PREFIX + record.id); added++;
+      }
+      library(); status(`✓ 已匯入 ${added} 份草稿；原有不同版本保留。`);
+    } catch (error) {
+      // Only remove newly-created keys; no pre-existing records were overwritten.
+      touched.forEach(key => { try { localStorage.removeItem(key); } catch {} });
+      status('匯入未完成，原草稿保留：' + error.message);
+    } finally { el('draftImportFile').value = ''; }
+  }
+  // These callbacks can change state programmatically without a DOM input event.
+  for (const name of ['toggleCode','removeCode','addCadre','removeCadre','addActivity','removeActivity','toggleTrait','setToggle','generateBase','localMerge','syncDailyLife','applySingleStudentMappings','applySelectedSelfEvalRow','clearSelfEvalFields']) {
+    const original = window[name];
+    if (typeof original !== 'function') continue;
+    window[name] = function(...args) { const result = original.apply(this,args); queue(); return result; };
+  }
+  const originalMerge = mergeAndPolish;
+  mergeAndPolish = async function(...args) {
+    try { return await originalMerge.apply(this,args); }
+    finally { queue(); save(); }
+  };
+  clearAll = newDraft;
+  window.CommentDrafts = {newDraft,save,exportBackup,get activeId(){return activeId;}};
+  document.addEventListener('DOMContentLoaded', () => {
+    initialized = true;
+    const date = new Date(); const year = date.getFullYear() - 1911 - (date.getMonth() < 7 ? 1 : 0);
+    el('draftYear').value = String(year); el('draftSemester').value = date.getMonth() >= 1 && date.getMonth() <= 6 ? '2' : '1';
+    el('draftClass').value = '未命名班級';
+    el('draftSave').onclick = () => save(true); el('draftNew').onclick = newDraft; el('draftReload').onclick = reload;
+    el('draftExport').onclick = exportBackup; el('draftImport').onclick = () => el('draftImportFile').click();
+    el('draftImportFile').onchange = event => importBackup(event.target.files[0]);
+    el('draftLibrary').onchange = event => switchDraft(event.target.value);
+    document.addEventListener('input', event => { if (fieldIds.includes(event.target.id) || contextIds.includes(event.target.id)) queue(); });
+    document.addEventListener('change', event => { if (fieldIds.includes(event.target.id) || contextIds.includes(event.target.id)) queue(); });
+    try {
+      const lastId = sessionStorage.getItem(ACTIVE_KEY) || localStorage.getItem(ACTIVE_KEY);
+      const raw = lastId && localStorage.getItem(PREFIX + lastId);
+      if (raw) apply(validateRecord(JSON.parse(raw)));
+      else { lastContent = JSON.stringify(capture()); library(); status('新草稿；編輯後自動儲存，新增學生或學期請按「新增學生／學期」。'); }
+    } catch (error) { conflict = true; library(); status('⚠ 無法讀取先前草稿，原資料保留。請先備份或檢查瀏覽器儲存設定。'); }
+  });
+  window.addEventListener('pagehide', () => save());
+  document.addEventListener('visibilitychange', () => { if (document.hidden) save(); });
+  window.addEventListener('beforeunload', event => { if (changed && !save()) { event.preventDefault(); event.returnValue = ''; } });
+  window.addEventListener('storage', event => {
+    if (event.key === PREFIX + activeId) { conflict = true; status('⚠ 另一分頁更新了此草稿，請先備份本頁，再讀取已存版本。'); }
+    if (event.key?.startsWith(PREFIX)) library();
+  });
+})();
+
+</script>
 </body>
 </html>
